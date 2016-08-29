@@ -150,6 +150,7 @@ var RFB;
 
             // Callback functions
             'onUpdateState': function () { },       // onUpdateState(rfb, state, oldstate, statusMsg): state update/change
+            'onNotification': function () { },      // onNotification(rfb, msg): notification for UI
             'onPasswordRequired': function () { },  // onPasswordRequired(rfb): VNC password is required
             'onClipboard': function () { },         // onClipboard(rfb, text): RFB clipboard contents received
             'onBell': function () { },              // onBell(rfb): RFB Bell message received
@@ -531,6 +532,11 @@ var RFB;
             return false;
         },
 
+        _notification: function(msg) {
+            Util.Debug("Notification: " + msg);
+            this._onNotification(this, msg);
+        },
+
         _handle_message: function () {
             if (this._sock.rQlen() === 0) {
                 Util.Warn("handle_message called on an empty receive queue");
@@ -734,6 +740,7 @@ var RFB;
                 Util.Debug('XVP credentials required (user' + xvp_sep +
                            'target' + xvp_sep + 'password) -- got only ' + this._rfb_password);
                 this._onPasswordRequired(this);
+                this._notification("XVP credentials required");
                 return false;
             }
 
@@ -1120,7 +1127,8 @@ var RFB;
 
             switch (xvp_msg) {
                 case 0:  // XVP_FAIL
-                    this._updateState(this._rfb_state, "Operation Failed");
+                    Util.Error("Operation Failed");
+                    this._notification("XVP Operation Failed");
                     break;
                 case 1:  // XVP_INIT
                     this._rfb_xvp_ver = xvp_ver;
@@ -1312,6 +1320,7 @@ var RFB;
 
         // Callback functions
         ['onUpdateState', 'rw', 'func'],        // onUpdateState(rfb, state, oldstate, statusMsg): RFB state update/change
+        ['onNotification', 'rw', 'func'],       // onNotification(rfb, msg): notification for the UI
         ['onPasswordRequired', 'rw', 'func'],   // onPasswordRequired(rfb): VNC password is required
         ['onClipboard', 'rw', 'func'],          // onClipboard(rfb, text): RFB clipboard contents received
         ['onBell', 'rw', 'func'],               // onBell(rfb): RFB Bell message received
