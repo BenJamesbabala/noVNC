@@ -197,7 +197,7 @@ var RFB;
         this._sock = new Websock();
         this._sock.on('message', this._handle_message.bind(this));
         this._sock.on('open', function () {
-            if ((this._rfb_connection_state === 'connect') &&
+            if ((this._rfb_connection_state === 'connecting') &&
                 (this._rfb_init_state == '')) {
                 this._rfb_init_state = 'ProtocolVersion';
                 Util.Debug("Starting VNC handshake");
@@ -216,10 +216,10 @@ var RFB;
                 msg += ")";
             }
             switch (this._rfb_connection_state) {
-                case 'disconnect':
+                case 'disconnecting':
                     this._updateConnectionState('disconnected', 'VNC disconnected' + msg);
                     break;
-                case 'connect':
+                case 'connecting':
                     this._fail('Failed to connect to server' + msg);
                     break;
                 case 'failed':
@@ -263,12 +263,12 @@ var RFB;
             }
 
             this._rfb_init_state = '';
-            this._updateConnectionState('connect');
+            this._updateConnectionState('connecting');
             return true;
         },
 
         disconnect: function () {
-            this._updateConnectionState('disconnect', 'Disconnecting');
+            this._updateConnectionState('disconnecting', 'Disconnecting');
             this._sock.off('error');
             this._sock.off('message');
             this._sock.off('open');
@@ -280,7 +280,7 @@ var RFB;
         },
 
         sendCtrlAltDel: function () {
-            if (this._rfb_connection_state !== 'normal' || this._view_only) { return false; }
+            if (this._rfb_connection_state !== 'connected' || this._view_only) { return false; }
             Util.Info("Sending Ctrl-Alt-Del");
 
             RFB.messages.keyEvent(this._sock, XK_Control_L, 1);
@@ -314,7 +314,7 @@ var RFB;
         // Send a key press. If 'down' is not specified then send a down key
         // followed by an up key.
         sendKey: function (code, down) {
-            if (this._rfb_connection_state !== "normal" || this._view_only) { return false; }
+            if (this._rfb_connection_state !== 'connected' || this._view_only) { return false; }
             if (typeof down !== 'undefined') {
                 Util.Info("Sending key code (" + (down ? "down" : "up") + "): " + code);
                 RFB.messages.keyEvent(this._sock, code, down ? 1 : 0);
@@ -327,14 +327,14 @@ var RFB;
         },
 
         clipboardPasteFrom: function (text) {
-            if (this._rfb_connection_state !== 'normal') { return; }
+            if (this._rfb_connection_state !== 'connected') { return; }
             RFB.messages.clientCutText(this._sock, text);
         },
 
         // Requests a change of remote desktop size. This message is an extension
         // and may only be sent if we have received an ExtendedDesktopSize message
         requestDesktopSize: function (width, height) {
-            if (this._rfb_connection_state !== "normal") { return; }
+            if (this._rfb_connection_state !== 'connected') { return; }
 
             if (this._supportsSetDesktopSize) {
                 RFB.messages.setDesktopSize(this._sock, width, height,
@@ -412,7 +412,7 @@ var RFB;
             if (this._display && this._display.get_context()) {
                 this._keyboard.ungrab();
                 this._mouse.ungrab();
-                if (state !== 'connect' && state !== 'loaded') {
+                if (state !== 'connecting' && state !== 'loaded') {
                     this._display.defaultCursor();
                 }
                 if (Util.get_logging() !== 'debug' || state === 'loaded') {
@@ -427,13 +427,13 @@ var RFB;
 
         /*
          * Connection states:
-         *   loaded       - page load, equivalent to disconnected
+         *   loaded - page load, equivalent to disconnected
          *   disconnected - idle state
-         *   connect      - starting to connect
-         *   normal       - connected
-         *   disconnect   - starting to disconnect
-         *   failed       - abnormal disconnect
-         *   fatal        - failed to load page, or fatal error
+         *   connecting
+         *   connected
+         *   disconnecting
+         *   failed - abnormal disconnect
+         *   fatal - failed to load page, or fatal error
          */
         _updateConnectionState: function (state, statusMsg) {
             var oldstate = this._rfb_state;
@@ -450,8 +450,8 @@ var RFB;
              * These are disconnected states. A previous connect may
              * asynchronously cause a connection so make sure we are closed.
              */
-            if (state in {'disconnected': 1, 'loaded': 1, 'connect': 1,
-                          'disconnect': 1, 'failed': 1, 'fatal': 1}) {
+            if (state in {'disconnected': 1, 'loaded': 1, 'connecting': 1,
+                          'disconnecting': 1, 'failed': 1, 'fatal': 1}) {
                 this._cleanupSocket(state);
             }
 
@@ -471,7 +471,7 @@ var RFB;
             var smsg = "New state '" + state + "', was '" + oldstate + "'.";
             Util.Debug(smsg);
 
-            if (this._disconnTimer && state !== 'disconnect') {
+            if (this._disconnTimer && state !== 'disconnecting') {
                 Util.Debug("Clearing disconnect timer");
                 clearTimeout(this._disconnTimer);
                 this._disconnTimer = null;
@@ -479,19 +479,19 @@ var RFB;
             }
 
             switch (state) {
-                case 'normal':
+                case 'connected':
                     if (oldstate === 'disconnected' || oldstate === 'failed') {
-                        Util.Error("Invalid transition from 'disconnected' or 'failed' to 'normal'");
+                        Util.Error("Invalid transition from 'disconnected' or 'failed' to 'connected'");
                     }
                     break;
 
-                case 'connect':
+                case 'connecting':
                     this._init_vars();
                     this._connect();
                     // WebSocket.onopen transitions to 'ProtocolVersion'
                     break;
 
-                case 'disconnect':
+                case 'disconnecting':
                     this._disconnTimer = setTimeout(function () {
                         this._fail("Disconnect timeout");
                     }.bind(this), this._disconnectTimeout * 1000);
@@ -504,7 +504,7 @@ var RFB;
                 case 'failed':
                     if (oldstate === 'disconnected') {
                         Util.Error("Invalid transition from 'disconnected' to 'failed'");
-                    } else if (oldstate === 'normal') {
+                    } else if (oldstate === 'connected') {
                         Util.Error("Error while connected.");
                     } else if (oldstate === 'init') {
                         Util.Error("Error while initializing.");
@@ -551,7 +551,7 @@ var RFB;
                 case 'failed':
                     Util.Error("Got data while disconnected");
                     break;
-                case 'normal':
+                case 'connected':
                     if (this._normal_msg() && this._sock.rQlen() > 0) {
                         // true means we can continue processing
                         // Give other events a chance to run
@@ -618,7 +618,7 @@ var RFB;
 
             if (this._view_only) { return; } // View only, skip mouse events
 
-            if (this._rfb_connection_state !== "normal") { return; }
+            if (this._rfb_connection_state !== 'connected') { return; }
             RFB.messages.pointerEvent(this._sock, this._display.absX(x), this._display.absY(y), this._mouse_buttonMask);
         },
 
@@ -645,7 +645,7 @@ var RFB;
 
             if (this._view_only) { return; } // View only, skip mouse events
 
-            if (this._rfb_connection_state !== "normal") { return; }
+            if (this._rfb_connection_state !== 'connected') { return; }
             RFB.messages.pointerEvent(this._sock, this._display.absX(x), this._display.absY(y), this._mouse_buttonMask);
         },
 
@@ -1027,9 +1027,9 @@ var RFB;
             this._timing.pixels = 0;
 
             if (this._encrypt) {
-                this._updateConnectionState('normal', 'Connected (encrypted) to: ' + this._fb_name);
+                this._updateConnectionState('connected', 'Connected (encrypted) to: ' + this._fb_name);
             } else {
-                this._updateConnectionState('normal', 'Connected (unencrypted) to: ' + this._fb_name);
+                this._updateConnectionState('connected', 'Connected (unencrypted) to: ' + this._fb_name);
             }
             return true;
         },
@@ -1244,7 +1244,7 @@ var RFB;
             }
 
             while (this._FBU.rects > 0) {
-                if (this._rfb_connection_state !== "normal") { return false; }
+                if (this._rfb_connection_state !== 'connected') { return false; }
 
                 if (this._sock.rQwait("FBU", this._FBU.bytes)) { return false; }
                 if (this._FBU.bytes === 0) {
