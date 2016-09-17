@@ -150,8 +150,9 @@ var RFB;
             'viewportDrag': false,                  // Move the viewport on mouse drags
 
             // Callback functions
-            'onUpdateState': function () { },       // onUpdateState(rfb, state, oldstate, statusMsg): state update/change
+            'onUpdateState': function () { },       // onUpdateState(rfb, state, oldstate): connection state change
             'onNotification': function () { },      // onNotification(rfb, msg): notification for UI
+            'onDisconnected': function () { },      // onDisconnected(rfb, reason): disconnect finished
             'onPasswordRequired': function () { },  // onPasswordRequired(rfb): VNC password is required
             'onClipboard': function () { },         // onClipboard(rfb, text): RFB clipboard contents received
             'onBell': function () { },              // onBell(rfb): RFB Bell message received
@@ -217,12 +218,11 @@ var RFB;
             }
             switch (this._rfb_connection_state) {
                 case 'disconnecting':
-                    this._updateConnectionState('disconnected', 'VNC disconnected' + msg);
+                    this._updateConnectionState('disconnected');
                     break;
                 case 'connecting':
                     this._fail('Failed to connect to server' + msg);
                     break;
-                case 'failed':
                 case 'disconnected':
                     Util.Error("Received onclose while disconnected" + msg);
                     break;
@@ -237,13 +237,12 @@ var RFB;
         });
 
         this._init_vars();
+        this._cleanupSocket();
 
         var rmode = this._display.get_render_mode();
         if (Websock_native) {
-            Util.Info("Using native WebSockets");
-            this._updateConnectionState('loaded', 'noVNC ready: native WebSockets, ' + rmode);
+            Util.Info("Using native WebSockets, render mode: " + rmode);
         } else {
-            this._cleanupSocket('fatal');
             throw new Error("WebSocket support is required to use noVNC");
         }
 
@@ -268,7 +267,7 @@ var RFB;
         },
 
         disconnect: function () {
-            this._updateConnectionState('disconnecting', 'Disconnecting');
+            this._updateConnectionState('disconnecting');
             this._sock.off('error');
             this._sock.off('message');
             this._sock.off('open');
@@ -403,7 +402,7 @@ var RFB;
             }
         },
 
-        _cleanupSocket: function (state) {
+        _cleanupSocket: function () {
             if (this._msgTimer) {
                 clearInterval(this._msgTimer);
                 this._msgTimer = null;
@@ -412,10 +411,8 @@ var RFB;
             if (this._display && this._display.get_context()) {
                 this._keyboard.ungrab();
                 this._mouse.ungrab();
-                if (state !== 'connecting' && state !== 'loaded') {
-                    this._display.defaultCursor();
-                }
-                if (Util.get_logging() !== 'debug' || state === 'loaded') {
+                this._display.defaultCursor();
+                if (Util.get_logging() !== 'debug') {
                     // Show noVNC logo on load and when disconnected, unless in
                     // debug mode
                     this._display.clear();
@@ -427,46 +424,20 @@ var RFB;
 
         /*
          * Connection states:
-         *   loaded - page load, equivalent to disconnected
          *   disconnected - idle state
          *   connecting
          *   connected
          *   disconnecting
-         *   failed - abnormal disconnect
-         *   fatal - failed to load page, or fatal error
          */
-        _updateConnectionState: function (state, statusMsg) {
+        _updateConnectionState: function (state, errorMsg) {
             var oldstate = this._rfb_state;
 
             if (state === oldstate) {
-                // Already here, ignore
                 Util.Debug("Already in state '" + state + "', ignoring");
                 return;
             }
 
             this._rfb_connection_state = state;
-
-            /*
-             * These are disconnected states. A previous connect may
-             * asynchronously cause a connection so make sure we are closed.
-             */
-            if (state in {'disconnected': 1, 'loaded': 1, 'connecting': 1,
-                          'disconnecting': 1, 'failed': 1, 'fatal': 1}) {
-                this._cleanupSocket(state);
-            }
-
-            if (oldstate === 'fatal') {
-                Util.Error('Fatal error, cannot continue');
-            }
-
-            if (typeof(statusMsg) !== 'undefined') {
-                var cmsg = " Msg: " + statusMsg;
-                if (state === 'failed' || state === 'fatal') {
-                    Util.Error(cmsg);
-                } else {
-                    Util.Warn(cmsg);
-                }
-            }
 
             var smsg = "New state '" + state + "', was '" + oldstate + "'.";
             Util.Debug(smsg);
@@ -478,60 +449,66 @@ var RFB;
                 this._sock.off('close');  // make sure we don't get a double event
             }
 
+            this._onUpdateState(this, state, oldstate);
             switch (state) {
+                case 'disconnected':
+                    this._cleanupSocket(); // Make sure we are closed.
+
+                    if (typeof(errorMsg) !== 'undefined') {
+                        this._onDisconnected(this, errorMsg);
+                    } else {
+                        this._onDisconnected(this); // No msg means clean disconnect
+                    }
+                    break;
+
                 case 'connected':
-                    if (oldstate === 'disconnected' || oldstate === 'failed') {
-                        Util.Error("Invalid transition from 'disconnected' or 'failed' to 'connected'");
+                    if (oldstate === 'disconnected') {
+                        Util.Error("Invalid transition from 'disconnected' to 'connected'");
                     }
                     break;
 
                 case 'connecting':
+                    // A previous connect may asynchronously cause a connection
+                    // so make sure we are still closed.
+                    this._cleanupSocket();
                     this._init_vars();
+
+                    // WebSocket.onopen transitions to the RFB init states
                     this._connect();
-                    // WebSocket.onopen transitions to 'ProtocolVersion'
                     break;
 
                 case 'disconnecting':
+                    // WebSocket.onclose transitions to 'disconnected'
+                    this._cleanupSocket();
+
                     this._disconnTimer = setTimeout(function () {
                         this._fail("Disconnect timeout");
                     }.bind(this), this._disconnectTimeout * 1000);
 
                     this._print_stats();
-
-                    // WebSocket.onclose transitions to 'disconnected'
-                    break;
-
-                case 'failed':
-                    if (oldstate === 'disconnected') {
-                        Util.Error("Invalid transition from 'disconnected' to 'failed'");
-                    } else if (oldstate === 'connected') {
-                        Util.Error("Error while connected.");
-                    } else if (oldstate === 'init') {
-                        Util.Error("Error while initializing.");
-                    }
                     break;
 
                 default:
                     // No state change action to take
             }
-
-            if (oldstate === 'failed' && state === 'disconnected') {
-                // do disconnect action, but stay in failed state and
-                // keep the previous status message
-                this._rfb_connection_state = 'failed';
-                this._onUpdateState(this, state, oldstate);
-            } else {
-                this._onUpdateState(this, state, oldstate, statusMsg);
-            }
-
-            // Make sure we transition to disconnected
-            if (state === 'failed') {
-                this._updateConnectionState('disconnected');
-            }
         },
 
         _fail: function (msg) {
-            this._updateConnectionState('failed', msg);
+            switch (this._rfb_connection_state) {
+                case 'disconnecting':
+                    Util.Error("Error while disconnecting: " + msg);
+                    break;
+                case 'connected':
+                    Util.Error("Error while connected: " + msg);
+                    break;
+                case 'connecting':
+                    Util.Error("Error while connecting: " + msg);
+                    break;
+                default:
+                    Util.Error("RFB error: " + msg);
+                    break;
+            }
+            this._updateConnectionState('disconnected', msg);
             return false;
         },
 
@@ -548,7 +525,6 @@ var RFB;
 
             switch (this._rfb_connection_state) {
                 case 'disconnected':
-                case 'failed':
                     Util.Error("Got data while disconnected");
                     break;
                 case 'connected':
@@ -1026,11 +1002,7 @@ var RFB;
             this._timing.fbu_rt_start = (new Date()).getTime();
             this._timing.pixels = 0;
 
-            if (this._encrypt) {
-                this._updateConnectionState('connected', 'Connected (encrypted) to: ' + this._fb_name);
-            } else {
-                this._updateConnectionState('connected', 'Connected (unencrypted) to: ' + this._fb_name);
-            }
+            this._updateConnectionState('connected');
             return true;
         },
 
@@ -1345,8 +1317,9 @@ var RFB;
         ['viewportDrag', 'rw', 'bool'],         // Move the viewport on mouse drags
 
         // Callback functions
-        ['onUpdateState', 'rw', 'func'],        // onUpdateState(rfb, state, oldstate, statusMsg): RFB state update/change
+        ['onUpdateState', 'rw', 'func'],        // onUpdateState(rfb, state, oldstate): connection state change
         ['onNotification', 'rw', 'func'],       // onNotification(rfb, msg): notification for the UI
+        ['onDisconnected', 'rw', 'func'],       // onDisconnected(rfb, reason): disconnect finished
         ['onPasswordRequired', 'rw', 'func'],   // onPasswordRequired(rfb): VNC password is required
         ['onClipboard', 'rw', 'func'],          // onClipboard(rfb, text): RFB clipboard contents received
         ['onBell', 'rw', 'func'],               // onBell(rfb): RFB Bell message received

@@ -84,6 +84,7 @@
 
         var rfb;
         var resizeTimeout;
+        var desktopName;
 
 
         function UIresize() {
@@ -99,6 +100,9 @@
         function FBUComplete(rfb, fbu) {
             UIresize();
             rfb.set_onFBUComplete(function() { });
+        }
+        function updateDesktopName(rfb, name) {
+            desktopName = name;
         }
         function passwordRequired(rfb) {
             var msg;
@@ -130,18 +134,26 @@
             rfb.xvpReset();
             return false;
         }
-        function updateState(rfb, state, oldstate, msg) {
-            var s, sb, cad, level;
-            s = $D('noVNC_status');
-            sb = $D('noVNC_status_bar');
-            cad = $D('sendCtrlAltDelButton');
+        function status(text, level) {
+            var s = $D('noVNC_status');
+            var sb = $D('noVNC_status_bar');
+            sb.setAttribute("class", "noVNC_status_" + level);
+            s.innerHTML = text;
+        }
+        function updateState(rfb, state, oldstate) {
+            var cad = $D('sendCtrlAltDelButton');
+            var encrypt = (rfb && rfb.get_encrypt()) ? 'encrypted' : 'unencrypted';
             switch (state) {
-                case 'failed':       level = "error";  break;
-                case 'fatal':        level = "error";  break;
-                case 'connected':    level = "normal"; break;
-                case 'disconnected': level = "normal"; break;
-                case 'loaded':       level = "normal"; break;
-                default:             level = "warn";   break;
+            case 'connecting':
+                status("Connecting", "normal"); break;
+            case 'connected':
+                status("Connected (" + encrypt + ") to: " + desktopName, "normal"); break;
+            case 'disconnecting':
+                status("Disconnecting", "normal"); break;
+            case 'disconnected':
+                status("Disconnected", "normal"); break;
+            default:
+                status(state, "warn"); break;
             }
 
             if (state === 'connected') {
@@ -151,9 +163,10 @@
                 xvpInit(0);
             }
 
-            if (typeof(msg) !== 'undefined') {
-                sb.setAttribute("class", "noVNC_status_" + level);
-                s.innerHTML = msg;
+        }
+        function disconnected(rfb, reason) {
+            if (typeof(reason) !== 'undefined') {
+                status(reason, "error");
             }
         }
         function notification(rfb, msg) {
@@ -236,9 +249,11 @@
                                'view_only':    WebUtil.getConfigVar('view_only', false),
                                'onNotification:  notification,
                                'onUpdateState':  updateState,
+                               'onDisconnected': disconnected,
                                'onXvpInit':    xvpInit,
                                'onPasswordRequired':  passwordRequired,
-                               'onFBUComplete': FBUComplete});
+                               'onFBUComplete': FBUComplete,
+                               'onDesktopName': updateDesktopName});
             } catch (exc) {
                 updateState(null, 'fatal', null, 'Unable to create RFB client -- ' + exc);
                 return; // don't continue trying to connect
